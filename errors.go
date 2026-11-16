@@ -18,6 +18,11 @@ var (
 	// ErrRefused: the device said no. errors.As gives a *StatusError, or
 	// a *FaultError when it said why.
 	ErrRefused = errors.New("the device refused")
+	// ErrLost: a subscription can no longer be trusted to have told
+	// everything: the device forgot it, an event did not arrive or could
+	// not be read, it could not be renewed in time, or the handler fell
+	// too far behind. Watching again starts from how things stand.
+	ErrLost = errors.New("the subscription is lost")
 )
 
 // StatusError is an HTTP status that is no success, from a device that

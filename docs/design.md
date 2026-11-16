@@ -17,7 +17,7 @@ maker: a library for one maker's devices is written on it.
 | Package | What it is | Built |
 | --- | --- | --- |
 | [`upnp`](../upnp.go) | one device, over HTTP: its [description](../description.go), its [services' descriptions](../scpd.go), its [actions](../control.go) | yes |
-| `upnp` | a device's events: a `Subscriber`, and `Watch` | not yet |
+| [`upnp`](../events.go) | a device's events: a `Subscriber`, and `Watch` | yes |
 | `ssdp` | finding devices: a `Browser`, and `Browse` | not yet |
 | [`upnptest`](../upnptest/device.go) | a device in a test's process | what is built |
 
@@ -25,7 +25,7 @@ maker: a library for one maker's devices is written on it.
 
 1. **No socket of its own for one device.** Package `upnp` opens nothing. The HTTP client
    every request goes through is the caller's, a `Doer`, with its timeouts, its redirects
-   and its proxies; the HTTP server events arrive at will be the caller's too, and the
+   and its proxies; the HTTP server events arrive at is the caller's too, and the
    `Subscriber` a handler it serves. A program with a network of its own, or a rule about
    which interface a device is reached by, has one place to say so.
 2. **One thing a host has once, opened once.** Port 1900 is one to a host. Package `ssdp`
@@ -57,7 +57,17 @@ maker: a library for one maker's devices is written on it.
    own element into any value, so that what the standard does not name is read by who
    knows it.
 9. **Nothing is kept, nothing runs.** No package-level state, no goroutine, no file, no
-   environment, no log.
+   environment, no log. A `Watch` runs on the goroutine that called it, and a
+   `Subscriber` holds a subscription for as long as its `Watch` lasts.
+10. **Watching is one call, and a loss is said.** `Watch` subscribes, tells how things
+    stand and then every change, in order, renews ahead of the subscription's end, and
+    unsubscribes when it returns. When the subscription can be trusted no more it
+    returns `ErrLost`, and does not subscribe again by itself: whether and when to watch
+    again is the caller's to decide, and watching again starts from how things stand.
+11. **Nothing about the caller's address is guessed.** The URL a device reaches the
+    `Subscriber` at is given to each `Watch`: it depends on which of the host's
+    addresses is on that device's network, which the caller knows and this package
+    cannot. One `Subscriber`, on one server, serves devices on every interface.
 
 ## Decisions
 
@@ -96,11 +106,52 @@ maker: a library for one maker's devices is written on it.
 - **A fault that is cut short is still a fault.** Once the device has said `Fault`, what
   follows only says why.
 
+- **A subscription has a path of its own.** The callback given and a random name: an
+  event is routed by the last element of its path, whatever the handler is served under.
+  A device may send the first event before it has answered `SUBSCRIBE`, which is what
+  says the subscription's identifier: the event is kept by its path, and told once the
+  answer says it is this subscription's.
+- **The device's count is held.** The first event is 0 and each is one more than the
+  last; one that is not says another did not arrive, and the subscription is lost. An
+  event that carries no count is told and holds the count to nothing. What a real
+  device's count does over a long subscription was not observed.
+- **An event that cannot be read is an event missed.** It ends the watch with `ErrLost`,
+  which is also an `ErrAnswer`, as one too large does, and the device is answered 400.
+  It takes its place among the events of the subscription it was sent under: one that
+  arrives before the device has said which subscription the path is, and turns out
+  another's, is dropped with the rest of that other's.
+- **Before the device has answered, a path proves nothing.** What fills a subscription's
+  path past what is held, before the device has said which subscription it is, is
+  refused and loses nothing: it may be anyone's.
+- **The count is held in the order events finish arriving.** Two events a device sends
+  at once, on two connections, are told in the order their bodies ended, and if that is
+  not the order of their counts the subscription is lost. A device that sends its
+  events one after the other never shows it.
+- **Nothing is told while a renewal waits for its answer.** It is asked on the goroutine
+  that tells; events are held meanwhile, up to the sixty-four, and a client with no
+  timeout of its own waits for as long as the subscription has left.
+- **One subscription holds sixty-four mebibytes at most:** sixty-four events of one each.
+- **An event's body has ten seconds to arrive,** where the caller's server lets a
+  deadline be set. No test holds it: it was measured once, by hand, a body left short
+  ending the watch after ten seconds with `ErrLost`.
+- **Events wait for the handler, up to sixty-four.** The handler runs on the caller's
+  goroutine and may take its time. Past sixty-four untold the device is answered 503 and
+  the subscription is lost, since the device may count an event it could not deliver.
+- **Renewal goes by what the device granted,** at half of it; a length that is no number
+  of seconds, `infinite` among them, is taken as the half hour that was asked for. A
+  device that refuses a renewal has forgotten the subscription; one that cannot be
+  reached is asked again at half of what is left, and no sooner than a second later,
+  until what is left is too short to try in. Nothing is tried past that. A subscription
+  that ran out while the handler was at work is lost, not renewed late.
+- **GENA's headers are written in capitals,** as the standard writes them.
+
 ## Tests
 
 Black-box, against `upnptest`'s device over the loopback, and against a bare socket for
-what goes on the wire. Each of the three readers of what a device sends, a description, a
-service's description and an answer, has a fuzz target that holds it to its errors, and
-the description's to never pointing off the device.
+what goes on the wire. Each of the four readers of what a device sends, a description, a
+service's description, an answer and an event, has a fuzz target that holds it to its
+errors, and the description's to never pointing off the device. The count's return to 1
+after its largest value is not reached by any test: four thousand million events are
+not sent.
 
 [uda]: https://openconnectivity.org/upnp-specs/UPnP-arch-DeviceArchitecture-v2.0-20200417.pdf
