@@ -18,8 +18,9 @@ maker: a library for one maker's devices is written on it.
 | --- | --- | --- |
 | [`upnp`](../upnp.go) | one device, over HTTP: its [description](../description.go), its [services' descriptions](../scpd.go), its [actions](../control.go) | yes |
 | [`upnp`](../events.go) | a device's events: a `Subscriber`, and `Watch` | yes |
-| `ssdp` | finding devices: a `Browser`, and `Browse` | not yet |
-| [`upnptest`](../upnptest/device.go) | a device in a test's process | what is built |
+| [`ssdp`](../ssdp/ssdp.go) | finding devices: a `Browser`, and [`Browse`](../ssdp/browse.go); the [links](../ssdp/network.go) it is spoken on, the [host's own](../ssdp/system.go) or another's | yes; the host's own network was run on no real network yet |
+| [`upnptest`](../upnptest/device.go) | a device in a test's process | yes |
+| [`ssdptest`](../ssdp/ssdptest/ssdptest.go) | networks, hosts and devices in a test's process | yes |
 
 ## What the API holds itself to
 
@@ -28,9 +29,11 @@ maker: a library for one maker's devices is written on it.
    and its proxies; the HTTP server events arrive at is the caller's too, and the
    `Subscriber` a handler it serves. A program with a network of its own, or a rule about
    which interface a device is reached by, has one place to say so.
-2. **One thing a host has once, opened once.** Port 1900 is one to a host. Package `ssdp`
-   will be the one thing a program opens and lends: every search shares its sockets and
-   what it has heard. The two packages do not import each other.
+2. **One thing a host has once, opened once.** Port 1900 is one to a host. A
+   `ssdp.Browser` is the one thing a program opens and lends: every `Browse` shares its
+   sockets and what it has heard, and a library that needs a search asks for it through
+   an interface of its own, which a `Browse` satisfies in a few lines. The two packages
+   do not import each other.
 3. **A device is trusted with nothing.** What it sends is read up to a bound. A
    description's URLs are made absolute and held to the host the description was read
    from, whatever the port: one that points a service or an icon anywhere else is refused
@@ -145,12 +148,92 @@ maker: a library for one maker's devices is written on it.
   that ran out while the handler was at work is lost, not renewed late.
 - **GENA's headers are written in capitals,** as the standard writes them.
 
+### Finding devices
+
+- **Browsing is one call that lasts.** `Browse` tells of what is there and of what
+  becomes of it: found, changed, lost. A search that returns a list once is what a
+  program then has to repeat, and compare, by itself.
+- **State is told, not steps.** A `Browse` keeps what its handler was last told, and
+  nothing of what happened since: when it looks, it compares that with everything the
+  `Browser` keeps. A slow handler delays its own `Browse` and no other, and is told how
+  things stand when it comes back: what came and went meanwhile is not told, and is not
+  kept. What the handler is handed is its own, places and headers both.
+- **An advertisement is told once, with every place it was heard at.** A device heard on
+  two interfaces, or at two URLs, is one advertisement with two locations, each with the
+  interface and this host's address there: what the device can call back, which is what
+  `upnp.Subscriber.Watch` asks for. Which location to use is the caller's to know.
+- **A description is taken only at the address its advertisement came from.** An http or
+  https URL whose host is that address, written as an address. An advertisement that
+  points anywhere else is not kept: a datagram is anyone's to send. A goodbye is held to
+  the same: it takes the places that were announced from the address it came from, on
+  the link it was heard on, and no other's.
+- **An advertisement is what its name says.** An answer to a search names the type that
+  was asked for, which for a device of a later version is not the type it has: the type
+  is read from the USN, after the device's name.
+- **A later version serves for an earlier one,** here as in a description.
+- **An advertisement holds for as long as it says,** a second at least and a day at most,
+  and half an hour when it says nothing that can be read. At three quarters of that time
+  what is being browsed for is searched for again, so that a device whose announcements
+  do not reach this host is not lost for that; one that answers no more is lost when its
+  time is up. An `ssdp:update`, which carries no length by the standard, holds for the
+  half hour.
+- **A search is sent three times,** over a little more than a second, since a datagram
+  may be lost, and the same search no more than once a second.
+- **What is kept is bounded:** four thousand and ninety-six advertisements, eight places
+  each, a name of five hundred and twelve bytes. Past that what is new is not taken.
+- **The links are an interface.** `Network` tells of a host's links as they come and go,
+  and a `Link` is where the group is heard and where searches leave from and are
+  answered. `System` is the host's own; `ssdptest` is one in a test's process, and a
+  program with a network stack of its own brings another.
+- **A link the network takes away is no failure; a link that breaks is.** A link's read
+  returns an error only when the link can be read no more: `net.ErrClosed` when it was
+  closed, which is the network's doing, and anything else when it is broken. What goes
+  wrong with one datagram is the link's to pass over: the host's own reads into more
+  than any datagram holds and drops what is larger than SSDP has, since a datagram too
+  large for its buffer is cut short on some systems and fails the read on others, and
+  it takes sixteen failed reads in a row for a socket to be broken. A link on which no
+  search could be sent, at three moments in a row or more and for a second or more, is
+  broken too: a search that did not leave at all, and not several that were due
+  together and met one bad moment. A failure more than two seconds after the last is
+  the first of another silence, and a moment in which one search left ends it, whatever
+  became of the others due with it.
+- **A network closes its own links, and a `Browser` closes those it is on all the
+  same.** `Close` waits for the links' readers; a network that ended and left its links
+  open would keep it waiting for good.
+- **Silence is not "no devices".** When the last link a `Browser` is on breaks, every
+  `Browse` ends with why, and `System` ends with why when SSDP is spoken on some
+  interface and none can be opened. A program the system keeps off the local network
+  meets this first: its searches do not leave, and it is told so. So does a host that
+  was off its network for a second while it browsed, waking or roaming: its `Browser`
+  is lost with the reason, and the program opens another. The network taking every
+  link away is another matter: a `Browse` then waits for what comes.
+- **An answer may come from off the link.** What is sent to the group is heard from a
+  neighbour only, by `System`; an answer to a search is taken from wherever it comes,
+  and has no address of this host's to call back when its device is on no network of
+  the interface's.
+- **Searches leave from a port of the link's own,** not the group's: devices answer at
+  the port a search came from, and some answer none that comes from port 1900.
+
+### Not built
+
+- IPv6.
+- A search sent to one address.
+- Interfaces that change after the host's own network was opened: `System` tells of the
+  interfaces there are when its `Watch` begins. The `Network` interface has the events
+  for it.
+- More than one address an interface: `System` sends searches from an interface's first
+  IPv4 address.
+- Multicast eventing, and announcing: this is the control point's side.
+- A command.
+
 ## Tests
 
 Black-box, against `upnptest`'s device over the loopback, and against a bare socket for
-what goes on the wire. Each of the four readers of what a device sends, a description, a
-service's description, an answer and an event, has a fuzz target that holds it to its
-errors, and the description's to never pointing off the device. The count's return to 1
+what goes on the wire; and, for `ssdp`, against `ssdptest`'s network, where a search and
+an announcement are datagrams between goroutines. Each of the five readers of what a
+device sends, a description, a service's description, an answer, an event and an SSDP
+message, has a fuzz target that holds it to its errors, the description's and the
+message's to never pointing off the device. The count's return to 1
 after its largest value is not reached by any test: four thousand million events are
 not sent.
 
