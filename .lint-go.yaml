@@ -65,3 +65,10 @@
 #   unshipped:                       # the main packages under cmd/ no release ships (book/releasing.md):
 #     - ./cmd/gen                    #   built and run from the tree; one command per entry, read by
 #                                    #   limen's workflows rule, nothing for golangci-lint
+
+# upnp is run from the tree, with `just upnp`: no release builds a binary of
+# it yet. It moves to .release-go.yaml's builds the day one does, which is a
+# decision this file does not make.
+commands:
+  unshipped:
+    - ./cmd/upnp

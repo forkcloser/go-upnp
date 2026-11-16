@@ -74,3 +74,22 @@ err = browser.Browse(ctx, ssdp.RootDevice, func(change ssdp.Change, found ssdp.A
 
 [`upnptest`](upnptest/device.go) is a device for tests, and
 [`ssdptest`](ssdp/ssdptest/ssdptest.go) a network of them.
+
+## The command
+
+`upnp` asks the library by hand, and says what it finds as JSON, one object on a line.
+From this repository, `just upnp` builds it and runs it:
+
+```bash
+just upnp browse --for 5s
+```
+
+```bash
+just upnp describe http://192.0.2.7:49153/description.xml
+```
+
+```bash
+just upnp call http://192.0.2.7:49153/description.xml urn:schemas-upnp-org:service:SwitchPower:1 GetStatus
+```
+
+`upnp` with no argument says the rest: a service's actions, and its events.
