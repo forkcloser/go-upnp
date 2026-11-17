@@ -1,9 +1,11 @@
 package upnp_test
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -129,6 +131,77 @@ func FuzzAnswer(f *testing.F) {
 			if value.Name == "" {
 				t.Fatalf("a value with no name was read: %+v", out)
 			}
+		}
+	})
+}
+
+// granting is a device that grants every subscription, and says where
+// each was told to deliver.
+type granting chan string
+
+func (g granting) Do(request *http.Request) (*http.Response, error) {
+	//nolint:staticcheck // SA1008: the header is read under the name it goes on the wire with
+	if callback := request.Header["CALLBACK"]; len(callback) == 1 {
+		g <- strings.Trim(callback[0], "<>")
+	}
+
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Sid": {"uuid:1"}, "Timeout": {"Second-1800"}},
+		Body:       io.NopCloser(strings.NewReader("")),
+	}, nil
+}
+
+// FuzzEvent: whatever a device delivers as an event is told, or ends the
+// Watch as no event.
+func FuzzEvent(f *testing.F) {
+	f.Add(`<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><A>1</A></e:property></e:propertyset>`)
+	f.Add("\xef\xbb\xbf<PROPERTYSET><PROPERTY><A>1</A><B><x/></B></PROPERTY><property/></PROPERTYSET>trailing")
+	f.Add(`<propertyset><property><A>`)
+	f.Add("")
+
+	f.Fuzz(func(t *testing.T, body string) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		subscriber := upnp.NewSubscriber()
+		callbacks := make(granting, 1)
+		told := make(chan upnp.Event, 1)
+		done := make(chan error, 1)
+
+		go func() {
+			done <- subscriber.Watch(
+				ctx, callbacks, upnp.Service{Type: upnptest.SwitchType, Events: "http://" + home + "/events"},
+				"http://192.0.2.2/", func(event upnp.Event) { told <- event },
+			)
+		}()
+
+		request := httptest.NewRequestWithContext(ctx, "NOTIFY", <-callbacks, strings.NewReader(body))
+		request.Header.Set("Sid", "uuid:1")
+		request.Header.Set("Seq", "0")
+
+		answer := httptest.NewRecorder()
+		subscriber.ServeHTTP(answer, request)
+
+		switch answer.Code {
+		case http.StatusOK:
+			for _, property := range (<-told).Properties {
+				if property.Name == "" {
+					t.Fatal("a variable with no name was told")
+				}
+			}
+
+			cancel()
+
+			if err := <-done; !errors.Is(err, context.Canceled) {
+				t.Fatalf("a Watch that was told its event ended with %v", err)
+			}
+		case http.StatusBadRequest:
+			if err := <-done; !errors.Is(err, upnp.ErrAnswer) || !errors.Is(err, upnp.ErrLost) {
+				t.Fatalf("a Watch sent what is no event ended with %v, want ErrLost and ErrAnswer", err)
+			}
+		default:
+			t.Fatalf("an event was answered %d", answer.Code)
 		}
 	})
 }

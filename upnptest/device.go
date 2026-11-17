@@ -6,6 +6,7 @@ package upnptest
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"errors"
 	"io"
@@ -145,16 +146,30 @@ type Call struct {
 }
 
 // Device is a UPnP device on the loopback. A new one serves Description
-// and SwitchDescription, and answers every action with UPnP's error 401,
-// until a test says otherwise.
+// and SwitchDescription, answers every action with UPnP's error 401, and
+// takes subscriptions at any path, until a test says otherwise.
 type Device struct {
 	server *httptest.Server
 	client *http.Client
+	// life ends when the Device is closed, and sending is the events on
+	// their way.
+	life    context.Context //nolint:containedctx // what outlives a request: an event sent after its answer
+	end     context.CancelFunc
+	sending sync.WaitGroup
 
 	mu      sync.Mutex
 	served  map[string]served
 	answers map[string]func(in upnp.Arguments) (upnp.Arguments, error)
 	calls   []Call
+
+	// What the Device's evented variables hold, its subscribers, what it
+	// grants them, and whether the first event goes ahead of the answer.
+	state       upnp.Arguments
+	subscribers []*subscriber
+	subscribed  []Subscription
+	grant       string
+	early       bool
+	issued      int
 }
 
 // served is what a path answers in place of what the Device would.
@@ -169,7 +184,11 @@ func New() *Device {
 	device := &Device{
 		served:  map[string]served{},
 		answers: map[string]func(in upnp.Arguments) (upnp.Arguments, error){},
+		state:   upnp.Arguments{{Name: "Status", Value: "0"}},
+		grant:   "Second-1800",
 	}
+
+	device.life, device.end = context.WithCancel(context.Background())
 
 	device.Serve(DescriptionPath, http.StatusOK, Description)
 	device.Serve(SwitchSCPD, http.StatusOK, SwitchDescription)
@@ -183,8 +202,10 @@ func New() *Device {
 
 // Close stops the Device, and ends what it was still answering.
 func (d *Device) Close() {
+	d.end()
 	d.server.CloseClientConnections()
 	d.server.Close()
+	d.sending.Wait()
 }
 
 // URL is the Device's address, as "http://127.0.0.1:port".
@@ -259,6 +280,8 @@ func (d *Device) handle(writer http.ResponseWriter, request *http.Request) {
 		_, _ = io.WriteString(writer, fixed.body)
 	case request.Method == http.MethodPost:
 		d.control(writer, request)
+	case request.Method == subscribe, request.Method == unsubscribe:
+		d.subscription(writer, request)
 	default:
 		http.NotFound(writer, request)
 	}

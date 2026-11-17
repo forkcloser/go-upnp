@@ -165,22 +165,30 @@ func answered(body []byte) (Arguments, *FaultError, error) {
 		return nil, fault(reading), nil
 	}
 
-	var answer Arguments
+	answer, err := values(reading)
+
+	return answer, nil, err
+}
+
+// values reads the elements inside the one that is open, up to its end,
+// each as a name and what it holds.
+func values(reading *xml.Decoder) (Arguments, error) {
+	var read Arguments
 
 	for {
 		element, err := child(reading)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 
 		if element == nil {
-			return answer, nil, nil
+			return read, nil
 		}
 
 		var value answeredValue
 
 		if err = reading.DecodeElement(&value, element); err != nil {
-			return nil, nil, fmt.Errorf("%w: %w", ErrAnswer, err)
+			return nil, fmt.Errorf("%w: %w", ErrAnswer, err)
 		}
 
 		// A value is text. One that holds elements is a device's document
@@ -190,7 +198,7 @@ func answered(body []byte) (Arguments, *FaultError, error) {
 			value.Text = value.Inner
 		}
 
-		answer = append(answer, Argument{Name: element.Name.Local, Value: value.Text})
+		read = append(read, Argument{Name: element.Name.Local, Value: value.Text})
 	}
 }
 

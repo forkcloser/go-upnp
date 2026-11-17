@@ -4,8 +4,8 @@ A Go library for UPnP control points: reading a device's description, calling it
 over SOAP, receiving its events, and finding devices over SSDP. The standard library
 only, and no knowledge of any maker.
 
-Built so far: descriptions and actions, in package `upnp`. Events and SSDP are designed,
-and not built yet. [docs/design.md](docs/design.md) says what the API holds itself to.
+Built so far: descriptions, actions and events, in package `upnp`. SSDP is designed, and
+not built yet. [docs/design.md](docs/design.md) says what the API holds itself to.
 
 ```go
 // A client for devices follows no redirect: one that does sends a
@@ -40,6 +40,20 @@ transport := upnp.Service{
 
 _, err := transport.Call(ctx, client, "Play",
 	upnp.Argument{Name: "InstanceID", Value: "0"}, upnp.Argument{Name: "Speed", Value: "1"})
+```
+
+Events come through a `Subscriber`, an `http.Handler` served on a server of the
+program's own, at an address the program gives:
+
+```go
+subscriber := upnp.NewSubscriber()
+
+go http.Serve(listener, subscriber)
+
+err := subscriber.Watch(ctx, client, power, "http://192.0.2.5:49200/", func(event upnp.Event) {
+	// First how things stand, then every change, in order.
+})
+// err says why it ended: ctx, a refusal, or upnp.ErrLost.
 ```
 
 [`upnptest`](upnptest/device.go) is a device for tests.
