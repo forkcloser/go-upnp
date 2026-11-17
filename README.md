@@ -4,8 +4,9 @@ A Go library for UPnP control points: reading a device's description, calling it
 over SOAP, receiving its events, and finding devices over SSDP. The standard library
 only, and no knowledge of any maker.
 
-Built so far: descriptions, actions and events, in package `upnp`. SSDP is designed, and
-not built yet. [docs/design.md](docs/design.md) says what the API holds itself to.
+Two packages: `upnp`, one device over HTTP, and `ssdp`, finding devices.
+[docs/design.md](docs/design.md) says what the API holds itself to, and what is not
+built: IPv6 among it.
 
 ```go
 // A client for devices follows no redirect: one that does sends a
@@ -56,4 +57,20 @@ err := subscriber.Watch(ctx, client, power, "http://192.0.2.5:49200/", func(even
 // err says why it ended: ctx, a refusal, or upnp.ErrLost.
 ```
 
-[`upnptest`](upnptest/device.go) is a device for tests.
+Devices are found through a `ssdp.Browser`, which a program opens once:
+
+```go
+browser, err := ssdp.Open(ctx, ssdp.Config{})
+if err != nil {
+	return err
+}
+defer browser.Close()
+
+err = browser.Browse(ctx, ssdp.RootDevice, func(change ssdp.Change, found ssdp.Advertisement) {
+	// Found, changed or lost: found.UDN is the device, found.Locations
+	// where its description is and this host's address on that network.
+})
+```
+
+[`upnptest`](upnptest/device.go) is a device for tests, and
+[`ssdptest`](ssdp/ssdptest/ssdptest.go) a network of them.
