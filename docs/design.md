@@ -21,6 +21,7 @@ maker: a library for one maker's devices is written on it.
 | [`ssdp`](../ssdp/ssdp.go) | finding devices: a `Browser`, and [`Browse`](../ssdp/browse.go); the [links](../ssdp/network.go) it is spoken on, the [host's own](../ssdp/system.go) or another's | yes; the host's own network was run on no real network yet |
 | [`upnptest`](../upnptest/device.go) | a device in a test's process | yes |
 | [`ssdptest`](../ssdp/ssdptest/ssdptest.go) | networks, hosts and devices in a test's process | yes |
+| [`cmd/upnp`](../cmd/upnp/main.go) | [the command](../internal/command/command.go): the library asked by hand, JSON coming out | yes |
 
 ## What the API holds itself to
 
@@ -224,7 +225,6 @@ maker: a library for one maker's devices is written on it.
 - More than one address an interface: `System` sends searches from an interface's first
   IPv4 address.
 - Multicast eventing, and announcing: this is the control point's side.
-- A command.
 
 ## Tests
 
