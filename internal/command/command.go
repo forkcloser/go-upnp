@@ -449,8 +449,29 @@ type event struct {
 	Properties []pair `json:"properties"`
 }
 
-// headerTime is how long a device has to send an event's headers.
-const headerTime = 10 * time.Second
+// What the callback's server gives a connection: headerTime for a
+// request's headers, requestTime for the whole of it, and idleTime between
+// two requests. An event's body has the Subscriber's own, shorter time;
+// requestTime is for a request that is no event, which is not answered
+// until its body has come: the server waits for it, with no deadline of
+// its own.
+const (
+	headerTime  = 10 * time.Second
+	requestTime = 30 * time.Second
+	idleTime    = time.Minute
+)
+
+// callbackServer is the server events are delivered to. Every read it
+// makes has a deadline: a host that sends a body slowly, or holds a
+// connection and sends nothing, is let go of.
+func callbackServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: headerTime,
+		ReadTimeout:       requestTime,
+		IdleTimeout:       idleTime,
+	}
+}
 
 func watch(ctx context.Context, env *Environment, args []string) error {
 	var callback string
@@ -480,7 +501,7 @@ func watch(ctx context.Context, env *Environment, args []string) error {
 	}
 
 	subscriber := upnp.NewSubscriber()
-	server := &http.Server{Handler: subscriber, ReadHeaderTimeout: headerTime}
+	server := callbackServer(subscriber)
 
 	served := make(chan struct{})
 
