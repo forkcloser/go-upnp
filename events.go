@@ -34,6 +34,11 @@ type Event struct {
 // reaches that server at. One Subscriber serves every device, whatever
 // interface each is reached on. The zero value is not one: NewSubscriber
 // makes it.
+//
+// The server's timeouts are the caller's to set. The Subscriber gives an
+// event's body ten seconds; a request that is no event, and a connection
+// that sends nothing, are held only to the server's ReadTimeout and
+// IdleTimeout, and for ever by a server that sets neither.
 type Subscriber struct {
 	mu sync.Mutex
 	// held is the subscriptions being watched, each by the last element
