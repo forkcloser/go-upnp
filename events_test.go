@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -149,6 +151,85 @@ func TestWatch(t *testing.T) {
 		"<propertyset/>",
 	); got != http.StatusPreconditionFailed {
 		t.Errorf("an event after the Watch ended was answered %d, want 412", got)
+	}
+}
+
+// TestAWatchEndedWhileSubscribing: a Watch whose context ends while the
+// device is answering its SUBSCRIBE still ends the subscription the device
+// granted, and returns its context's error. It returned without the answer,
+// with nothing to end the subscription by, and the device held it.
+func TestAWatchEndedWhileSubscribing(t *testing.T) {
+	t.Parallel()
+
+	fake := device(t)
+	subscriber, callback := served(t)
+
+	target, err := url.Parse(fake.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	done := make(chan error, 1)
+
+	// In front of the device: it has granted the subscription, the Watch's
+	// context ends, and the answer is held back for as long as a Watch that
+	// gives up at once takes to return.
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.ModifyResponse = func(response *http.Response) error {
+		if response.Request.Method == "SUBSCRIBE" {
+			cancel()
+
+			select {
+			case err := <-done:
+				done <- err
+			case <-time.After(wait / 60):
+			}
+		}
+
+		return nil
+	}
+
+	front := httptest.NewServer(proxy)
+	t.Cleanup(front.Close)
+
+	service := upnp.Service{Type: upnptest.SwitchType, Events: front.URL + upnptest.SwitchEvents}
+
+	go func() {
+		done <- subscriber.Watch(ctx, front.Client(), service, callback, func(upnp.Event) {})
+	}()
+
+	if err := ended(t, done); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a Watch whose context ended while subscribing = %v", err)
+	}
+
+	asked := fake.Subscribed()
+	if fake.Subscribers() != 0 || len(asked) != 2 || asked[1].Method != "UNSUBSCRIBE" ||
+		asked[1].SID != "uuid:subscription-1" {
+		t.Fatalf("the device was asked %+v and holds %d subscriptions, want none held", asked, fake.Subscribers())
+	}
+}
+
+// TestAWatchAlreadyEnded: a Watch whose context has ended before it is
+// called asks the device for nothing.
+func TestAWatchAlreadyEnded(t *testing.T) {
+	t.Parallel()
+
+	fake := device(t)
+	subscriber, callback := served(t)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	err := subscriber.Watch(ctx, fake.Client(), evented(fake), callback, func(upnp.Event) {})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("a Watch whose context had ended = %v", err)
+	}
+
+	if asked := fake.Subscribed(); len(asked) != 0 {
+		t.Fatalf("the device was asked %+v, want nothing", asked)
 	}
 }
 
