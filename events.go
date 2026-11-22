@@ -174,13 +174,15 @@ func (s *Subscriber) ServeHTTP(writer http.ResponseWriter, request *http.Request
 // host's address on the network the device is on, and the path it is
 // served under. The subscription's own path is added to it.
 //
-// Watch returns ctx's error when ctx ends. Sooner, it returns an
-// ErrRefused when the device takes no subscription, and an ErrLost when
-// the subscription can be trusted no more: the device forgot it, an
-// event did not arrive or could not be read, it could not be renewed in
-// time, or handle fell more than sixty-four events behind. It does not subscribe
-// again by itself: watching again does, and starts from how things
-// stand.
+// Watch returns ctx's error when ctx ends, once it has unsubscribed: the
+// device is given five seconds to take that, and as long again to answer
+// when ctx ends before it has said which subscription it granted. Sooner,
+// Watch returns an ErrRefused when the device takes no subscription, and
+// an ErrLost when the subscription can be trusted no more: the device
+// forgot it, an event did not arrive or could not be read, it could not
+// be renewed in time, or handle fell more than sixty-four events behind.
+// It does not subscribe again by itself: watching again does, and starts
+// from how things stand.
 func (s *Subscriber) Watch(
 	ctx context.Context, client Doer, service Service, callback string, handle func(Event),
 ) error {
@@ -216,11 +218,22 @@ func (s *Subscriber) Watch(
 
 	watching := watch{client: client, events: events.String(), held: held}
 
+	// A subscription asked for is seen through past ctx's end: one that has
+	// already ended asks for none.
+	if ctx.Err() != nil {
+		return fmt.Errorf("subscribing to %s: %w", service.Type, context.Cause(ctx))
+	}
+
 	if err = watching.subscribe(ctx, reached.JoinPath(name).String()); err != nil {
 		return fmt.Errorf("subscribing to %s: %w", service.Type, err)
 	}
 
 	defer watching.unsubscribe(ctx)
+
+	// Granted as ctx ended: there is nothing to watch, and one to end.
+	if ctx.Err() != nil {
+		return fmt.Errorf("subscribing to %s: %w", service.Type, context.Cause(ctx))
+	}
 
 	return watching.run(ctx, handle)
 }
@@ -305,9 +318,23 @@ func (w *watch) inOrder(one arrived) error {
 	return nil
 }
 
-// subscribe asks the device for the subscription.
+// subscribe asks the device for the subscription. The request outlasts
+// ctx by parting: the device may have granted the subscription by the time
+// ctx ends, and only its answer says which one there is to end.
 func (w *watch) subscribe(ctx context.Context, callback string) error {
-	request, err := http.NewRequestWithContext(ctx, "SUBSCRIBE", w.events, http.NoBody)
+	asking, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancel()
+
+	stop := context.AfterFunc(ctx, func() {
+		select {
+		case <-asking.Done():
+		case <-time.After(parting):
+			cancel()
+		}
+	})
+	defer stop()
+
+	request, err := http.NewRequestWithContext(asking, "SUBSCRIBE", w.events, http.NoBody)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
@@ -318,11 +345,14 @@ func (w *watch) subscribe(ctx context.Context, callback string) error {
 	request.Header["TIMEOUT"] = []string{timeout(lease)}
 
 	sid, err := w.ask(request)
-	if err != nil {
-		return err
-	}
 
-	if sid == "" {
+	switch {
+	case err != nil && ctx.Err() != nil:
+		// Not answered in the time left to it: ctx's end is what ended it.
+		return fmt.Errorf("the device had not answered: %w", context.Cause(ctx))
+	case err != nil:
+		return err
+	case sid == "":
 		return fmt.Errorf("%w: a subscription with no SID", ErrAnswer)
 	}
 
